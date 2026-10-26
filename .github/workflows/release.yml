@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid VERSION: '$VERSION' (expected semver like 1.2.3)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.ver.outputs.tag }} already exists — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release archive
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          STAGE="resolve-convert-nautilus-${VERSION}"
+          mkdir -p "$STAGE"
+
+          cp LICENSE README.md VERSION \
+            install.sh uninstall.sh install_uninstall-resolve.sh \
+            ffmpeg-install_remote-resolve.sh \
+            resolveconverter-installer.desktop \
+            "$STAGE/"
+
+          mkdir -p "$STAGE/release/nautilus-python" "$STAGE/release/nautilus-scripts"
+          cp release/ffmpegconvert-resolve.sh "$STAGE/release/"
+          cp release/nautilus-python/ffmpegconvert_resolve.py "$STAGE/release/nautilus-python/"
+          cp "release/nautilus-scripts/Convert for Resolve" "$STAGE/release/nautilus-scripts/"
+
+          if [[ -f DV_Panels.png ]]; then
+            cp DV_Panels.png "$STAGE/"
+          fi
+
+          chmod +x \
+            "$STAGE/install.sh" \
+            "$STAGE/uninstall.sh" \
+            "$STAGE/install_uninstall-resolve.sh" \
+            "$STAGE/ffmpeg-install_remote-resolve.sh" \
+            "$STAGE/release/ffmpegconvert-resolve.sh" \
+            "$STAGE/release/nautilus-scripts/Convert for Resolve"
+
+          zip -r "${STAGE}.zip" "$STAGE"
+          cp resolveconverter-installer.desktop \
+            "resolveconverter-installer-${VERSION}.desktop"
+
+          echo "ARCHIVE=${STAGE}.zip" >> "$GITHUB_ENV"
+          echo "DESKTOP=resolveconverter-installer-${VERSION}.desktop" >> "$GITHUB_ENV"
+
+      - name: Write release notes
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          cat > release-notes.md <<EOF
+          ## Resolve Convert for Nautilus ${TAG}
+
+          ### Install (recommended)
+
+          1. Download \`resolve-convert-nautilus-${VERSION}.zip\` below
+          2. Extract it
+          3. In a terminal:
+
+          \`\`\`bash
+          chmod +x install.sh
+          ./install.sh
+          \`\`\`
+
+          ### Uninstall
+
+          \`\`\`bash
+          ./uninstall.sh
+          \`\`\`
+
+          ### One-click installer
+
+          Download \`resolveconverter-installer-${VERSION}.desktop\`, then double-click it and choose **Run as a Program**. That fetches the current remote installer from the repo (see README).
+
+          ### Dependencies
+
+          - Required: \`bash\`, \`ffmpeg\` (with \`ffprobe\`), \`zenity\`
+          - Recommended for a top-level context menu: \`python3-nautilus\` / \`nautilus-python\` / \`python-nautilus\`
+
+          After install, reopen Nautilus if needed, then right-click a video → **Convert for Resolve** (or **Scripts → Convert for Resolve**).
+          EOF
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            cat release-notes.md
+            echo
+            echo "### Changes since previous release"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${{ steps.ver.outputs.tag }}" \
+              -f target_commitish="${GITHUB_SHA}" \
+              --jq .body || echo "_Could not auto-generate commit notes._"
+          } > full-notes.md
+
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "Resolve Convert for Nautilus ${{ steps.ver.outputs.tag }}" \
+            --notes-file full-notes.md \
+            --target "${GITHUB_SHA}" \
+            "$ARCHIVE" \
+            "$DESKTOP"

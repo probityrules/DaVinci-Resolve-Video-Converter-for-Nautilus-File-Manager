@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Nautilus Scripts fallback: Scripts → Convert for Resolve
+# SCRIPT_PATH is rewritten by the installer.
+
+SCRIPT_PATH="${HOME}/.local/bin/ffmpegconvert-resolve.sh"
+
+if [[ ! -x "$SCRIPT_PATH" ]]; then
+  zenity --error --text="Converter not found or not executable:\n$SCRIPT_PATH" 2>/dev/null || \
+    echo "Converter not found or not executable: $SCRIPT_PATH" >&2
+  exit 1
+fi
+
+paths=()
+if [[ -n "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && paths+=("$line")
+  done <<< "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS"
+fi
+
+if [[ ${#paths[@]} -eq 0 ]]; then
+  for arg in "$@"; do
+    [[ -n "$arg" ]] && paths+=("$arg")
+  done
+fi
+
+if [[ ${#paths[@]} -eq 0 ]]; then
+  zenity --error --text="No files selected." 2>/dev/null || \
+    echo "No files selected." >&2
+  exit 1
+fi
+
+exec "$SCRIPT_PATH" "${paths[@]}"

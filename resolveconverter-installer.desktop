@@ -1,9 +1,8 @@
-#!/usr/bin/env xdg-open
 [Desktop Entry]
 Type=Application
 Name=Resolve Convert Installer
-Comment=Install, update, or uninstall Resolve Convert
+Comment=Install, update, or uninstall Resolve Convert for Nautilus
 Icon=system-software-install
 Terminal=true
-Exec=bash -c 'mkdir -p "$HOME/.local/bin"; curl -fsSL https://raw.githubusercontent.com/MetalMan1245/DaVinci-Resolve-Video-Converter-for-Dolphin-File-Manager/main/ffmpeg-install_remote-resolve.sh -o "$HOME/.local/bin/ffmpeg-install_remote-resolve.sh" && chmod +x "$HOME/.local/bin/ffmpeg-install_remote-resolve.sh" && "$HOME/.local/bin/ffmpeg-install_remote-resolve.sh"; echo; read -p "Press Enter to close..."'
+Exec=bash -c 'mkdir -p "$HOME/.local/bin"; curl -fsSL https://raw.githubusercontent.com/probityrules/DaVinci-Resolve-Video-Converter-for-Nautilus-File-Manager/main/ffmpeg-install_remote-resolve.sh -o "$HOME/.local/bin/ffmpeg-install_remote-resolve.sh" && chmod +x "$HOME/.local/bin/ffmpeg-install_remote-resolve.sh" && "$HOME/.local/bin/ffmpeg-install_remote-resolve.sh"; echo; read -p "Press Enter to close..."'
 Categories=Utility;

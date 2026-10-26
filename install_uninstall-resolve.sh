@@ -13,22 +13,32 @@ mkdir -p "$CONFIG_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_SOURCE="$SCRIPT_DIR/release/ffmpegconvert-resolve.sh"
-
-shopt -s nullglob
-DESKTOP_FILES=("$SCRIPT_DIR"/release/servicemenus/ffmpegconvert-resolve.desktop)
+EXT_SOURCE="$SCRIPT_DIR/release/nautilus-python/ffmpegconvert_resolve.py"
+NAUTILUS_SCRIPT_SOURCE="$SCRIPT_DIR/release/nautilus-scripts/Convert for Resolve"
 
 DEFAULT_SCRIPT_DIR="$HOME/.local/bin"
 DEFAULT_SCRIPT_PATH="$HOME/.local/bin/ffmpegconvert-resolve.sh"
 
-USER_DIR="$HOME/.local/share/kio/servicemenus"
-SYSTEM_DIR="/usr/share/kio/servicemenus"
+USER_EXT_DIR="$HOME/.local/share/nautilus-python/extensions"
+SYSTEM_EXT_DIR="/usr/share/nautilus-python/extensions"
+USER_SCRIPTS_DIR="$HOME/.local/share/nautilus/scripts"
+EXT_NAME="ffmpegconvert_resolve.py"
+NAUTILUS_SCRIPT_NAME="Convert for Resolve"
 
 ########################################
 # SAFETY CHECK
 ########################################
 
 if [ ! -f "$SCRIPT_SOURCE" ]; then
-    echo "ERROR: ffmpegconvert-resolve.sh must be next to installer"
+    echo "ERROR: release/ffmpegconvert-resolve.sh not found next to installer"
+    exit 1
+fi
+if [ ! -f "$EXT_SOURCE" ]; then
+    echo "ERROR: release/nautilus-python/ffmpegconvert_resolve.py not found"
+    exit 1
+fi
+if [ ! -f "$NAUTILUS_SCRIPT_SOURCE" ]; then
+    echo "ERROR: release/nautilus-scripts/Convert for Resolve not found"
     exit 1
 fi
 
@@ -53,39 +63,68 @@ fi
 ask() { read -rp "$1 " r; echo "$r"; }
 confirm() { read -rp "$1 [y/N]: " r; [[ "$r" =~ ^[Yy]$ ]]; }
 
-run_rm() {
-    if [ "$USE_SUDO" -eq 1 ]; then
-        sudo rm -f -- "$1"
+refresh_nautilus() {
+    if command -v nautilus >/dev/null 2>&1; then
+        echo "Restarting Nautilus (nautilus -q)..."
+        nautilus -q >/dev/null 2>&1 || true
     else
-        rm -f -- "$1"
+        echo "Note: nautilus not found in PATH; reopen Nautilus manually to load changes."
     fi
 }
 
-refresh_kde() {
-    if command -v kbuildsycoca6 >/dev/null 2>&1; then
-        kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
-    elif command -v kbuildsycoca5 >/dev/null 2>&1; then
-        kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
+detect_nautilus_python() {
+    if python3 - <<'PY' >/dev/null 2>&1
+import gi
+gi.require_version("Nautilus", "4.0")
+from gi.repository import Nautilus  # noqa: F401
+PY
+    then
+        return 0
     fi
+    if python3 - <<'PY' >/dev/null 2>&1
+import gi
+gi.require_version("Nautilus", "3.0")
+from gi.repository import Nautilus  # noqa: F401
+PY
+    then
+        return 0
+    fi
+    return 1
+}
 
-    # extra safety: restart cache daemon (important on Plasma 5/6 edge cases)
-    kquitapp6 kded6 >/dev/null 2>&1 || true
-    kquitapp5 kded5 >/dev/null 2>&1 || true
+print_nautilus_python_hints() {
+    echo "  Debian/Ubuntu:  sudo apt install python3-nautilus"
+    echo "  Fedora:         sudo dnf install nautilus-python"
+    echo "  Arch:           sudo pacman -S python-nautilus"
 }
 
 ########################################
 # DEPENDENCIES
 ########################################
 
-command -v ffmpeg >/dev/null 2>&1 || missing_ffmpeg=1
-command -v ffprobe >/dev/null 2>&1 || missing_ffmpeg=1
-command -v zenity >/dev/null 2>&1 || missing_zenity=1
+missing=()
+command -v ffmpeg >/dev/null 2>&1 || missing+=("ffmpeg")
+command -v ffprobe >/dev/null 2>&1 || missing+=("ffprobe")
+command -v zenity >/dev/null 2>&1 || missing+=("zenity")
+
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "WARNING: missing required tools: ${missing[*]}"
+    echo "Install them before converting videos."
+    echo
+fi
 
 ########################################
 # LOAD CONFIG (uninstall)
 ########################################
 
+USE_SUDO=0
+SCRIPT_PATH=""
+TARGET_EXT_DIR=""
+INTEGRATION_MODE=""
+NAUTILUS_SCRIPT_PATH=""
+
 if [ "$UNINSTALL" -eq 1 ] && [ -f "$CONFIG_FILE" ]; then
+    # shellcheck source=/dev/null
     source "$CONFIG_FILE"
 fi
 
@@ -96,41 +135,47 @@ fi
 if [ "$UNINSTALL" -eq 1 ]; then
 
     echo "========================================"
-    echo "FFMPEG CONVERT UNINSTALL"
+    echo "Resolve Convert — Uninstall (Nautilus)"
     echo "========================================"
     echo
 
-    echo "Script:"
-    echo "  $SCRIPT_PATH"
+    echo "Converter script:"
+    echo "  ${SCRIPT_PATH:-"(unknown)"}"
     echo
-    echo "Target directory:"
-    echo "  $TARGET_DIR"
+    echo "Extension directory:"
+    echo "  ${TARGET_EXT_DIR:-"(none)"}"
+    echo
+    echo "Nautilus script:"
+    echo "  ${NAUTILUS_SCRIPT_PATH:-"(none)"}"
+    echo
+    echo "Integration mode:"
+    echo "  ${INTEGRATION_MODE:-"(unknown)"}"
     echo
 
     confirm "Continue uninstall?" || exit 0
 
     echo
-    echo "Removing script..."
-    run_rm "$SCRIPT_PATH"
-
-    echo
-    echo "Removing service menus..."
+    echo "Removing installed files..."
 
     REMOVED=0
     FAILED=0
-
-    ########################################
-    # PRIMARY: manifest-based removal
-    ########################################
 
     if [ -f "$MANIFEST_FILE" ]; then
         while IFS= read -r f; do
             [ -z "$f" ] && continue
             echo "Deleting: $f"
-            run_rm "$f"
-
+            # Prefer sudo only for paths outside $HOME
+            if [[ "$f" == "$HOME"/* ]]; then
+                rm -f -- "$f" || true
+            else
+                if [ "${USE_SUDO:-0}" -eq 1 ]; then
+                    sudo rm -f -- "$f" || true
+                else
+                    rm -f -- "$f" || true
+                fi
+            fi
             if [ -e "$f" ]; then
-                echo "❌ FAILED: $f"
+                echo "FAILED: $f"
                 FAILED=1
             else
                 REMOVED=1
@@ -138,64 +183,41 @@ if [ "$UNINSTALL" -eq 1 ]; then
         done < "$MANIFEST_FILE"
     fi
 
-    ########################################
-    # FALLBACK: directory scan (IMPORTANT FIX)
-    ########################################
-
-    echo
-    echo "Fallback scan of servicemenus..."
-
-    for f in "$TARGET_DIR"/ffmpegconvert-resolve.desktop; do
+    # Fallback removals
+    for f in \
+        "${SCRIPT_PATH}" \
+        "${TARGET_EXT_DIR}/${EXT_NAME}" \
+        "${USER_EXT_DIR}/${EXT_NAME}" \
+        "${SYSTEM_EXT_DIR}/${EXT_NAME}" \
+        "${NAUTILUS_SCRIPT_PATH}" \
+        "${USER_SCRIPTS_DIR}/${NAUTILUS_SCRIPT_NAME}"
+    do
+        [ -z "$f" ] && continue
         [ -e "$f" ] || continue
-        echo "Deleting (scan): $f"
-        run_rm "$f"
-
+        echo "Deleting (fallback): $f"
+        if [[ "$f" == "$HOME"/* ]]; then
+            rm -f -- "$f" || true
+        else
+            sudo rm -f -- "$f" 2>/dev/null || rm -f -- "$f" || true
+        fi
         if [ -e "$f" ]; then
-            echo "❌ FAILED: $f"
+            echo "FAILED: $f"
             FAILED=1
+        else
+            REMOVED=1
         fi
     done
 
-    ########################################
-    # KDE REFRESH (CRITICAL)
-    ########################################
+    refresh_nautilus
 
     echo
-    echo "Refreshing KDE cache..."
-    refresh_kde
-
-    ########################################
-    # VERIFY REAL STATE (NOT CONFIG)
-    ########################################
-
-    echo
-    echo "Verifying..."
-
-    STILL_EXISTS=0
-
-    for f in "$TARGET_DIR"/ffmpegconvert-resolve.desktop; do
-        if [ -e "$f" ]; then
-            echo "❌ STILL EXISTS: $f"
-            STILL_EXISTS=1
-        fi
-    done
-
-    echo
-    if [ "$STILL_EXISTS" -eq 0 ]; then
-        echo "✔ All servicemenus removed from filesystem"
+    if [ "$FAILED" -eq 0 ]; then
+        echo "Uninstall complete."
     else
-        echo "⚠ Some files still remain (permissions or KDE lock issue)"
-        echo "Try: logout/login or reboot"
+        echo "Uninstall finished with some failures (check permissions)."
     fi
 
-    ########################################
-    # CLEANUP
-    ########################################
-
     rm -f "$CONFIG_FILE" "$MANIFEST_FILE"
-
-    echo
-    echo "✔ Uninstall complete"
     exit 0
 fi
 
@@ -203,30 +225,62 @@ fi
 # INSTALL
 ########################################
 
-echo "Install scope:"
-echo "1) User"
-echo "2) System"
+echo "========================================"
+echo "Resolve Convert — Install (Nautilus)"
+echo "========================================"
+echo
 
-choice=$(ask "Select [1-2]:")
-
-if [ "$choice" == "2" ]; then
-    TARGET_DIR="$SYSTEM_DIR"
-    USE_SUDO=1
+HAS_NAUTILUS_PYTHON=0
+if detect_nautilus_python; then
+    HAS_NAUTILUS_PYTHON=1
+    echo "Detected python3-nautilus / nautilus-python."
 else
-    TARGET_DIR="$USER_DIR"
-    USE_SUDO=0
+    echo "python3-nautilus not detected (top-level context menu unavailable)."
+    print_nautilus_python_hints
+fi
+echo
+
+INTEGRATION_MODE="scripts"
+USE_SUDO=0
+TARGET_EXT_DIR=""
+
+if [ "$HAS_NAUTILUS_PYTHON" -eq 1 ]; then
+    echo "Integration:"
+    echo "1) Python extension (top-level \"Convert for Resolve\") [recommended]"
+    echo "2) Nautilus Scripts fallback (under Scripts submenu)"
+    choice=$(ask "Select [1-2] (default 1):")
+    if [ "$choice" == "2" ]; then
+        INTEGRATION_MODE="scripts"
+    else
+        INTEGRATION_MODE="extension"
+    fi
+else
+    echo "Installing Nautilus Scripts fallback automatically."
+    INTEGRATION_MODE="scripts"
 fi
 
-# IMPORTANT FIX
-mkdir -p "$TARGET_DIR"
-mkdir -p "$USER_DIR"
+if [ "$INTEGRATION_MODE" == "extension" ]; then
+    echo
+    echo "Extension install scope:"
+    echo "1) User  (~/.local/share/nautilus-python/extensions)"
+    echo "2) System (/usr/share/nautilus-python/extensions)"
+    scope=$(ask "Select [1-2] (default 1):")
+    if [ "$scope" == "2" ]; then
+        TARGET_EXT_DIR="$SYSTEM_EXT_DIR"
+        USE_SUDO=1
+    else
+        TARGET_EXT_DIR="$USER_EXT_DIR"
+        USE_SUDO=0
+    fi
+fi
 
 ########################################
 # SCRIPT INSTALL
 ########################################
 
-echo "Script location (default: $DEFAULT_SCRIPT_DIR)"
-custom=$(ask "Custom path (Enter = default):")
+echo
+echo "Converter script location (default: $DEFAULT_SCRIPT_DIR)"
+custom=$(ask "Custom directory (Enter = default):")
 
 if [ -z "$custom" ]; then
     SCRIPT_DEST="$DEFAULT_SCRIPT_PATH"
@@ -236,54 +290,79 @@ else
 fi
 
 mkdir -p "$(dirname "$SCRIPT_DEST")"
-
 cp "$SCRIPT_SOURCE" "$SCRIPT_DEST"
 chmod +x "$SCRIPT_DEST"
-
-########################################
-# INSTALL DESKTOP FILES
-########################################
-
-echo "Installing service menus → $TARGET_DIR"
+echo "Installed converter → $SCRIPT_DEST"
 
 > "$MANIFEST_FILE"
+echo "$SCRIPT_DEST" >> "$MANIFEST_FILE"
 
-for file in "${DESKTOP_FILES[@]}"; do
-    name=$(basename "$file")
-    tmp="/tmp/$name"
+########################################
+# EXTENSION OR SCRIPTS
+########################################
 
-    cp "$file" "$tmp"
-    sed -i "s|Exec=.*ffmpegconvert-resolve.sh|Exec=$SCRIPT_DEST|g" "$tmp"
+NAUTILUS_SCRIPT_PATH=""
 
-    dest="$TARGET_DIR/$name"
-
+if [ "$INTEGRATION_MODE" == "extension" ]; then
+    echo "Installing Nautilus Python extension → $TARGET_EXT_DIR"
     if [ "$USE_SUDO" -eq 1 ]; then
-        sudo cp "$tmp" "$dest"
-        sudo chmod +x "$dest"
+        sudo mkdir -p "$TARGET_EXT_DIR"
     else
-        cp "$tmp" "$dest"
-        chmod +x "$dest"
+        mkdir -p "$TARGET_EXT_DIR"
     fi
 
-    echo "$dest" >> "$MANIFEST_FILE"
+    tmp="$(mktemp)"
+    # Escape backslashes and quotes for a Python string literal
+    escaped_path="${SCRIPT_DEST//\\/\\\\}"
+    escaped_path="${escaped_path//\"/\\\"}"
+    sed "s|^SCRIPT_PATH = .*|SCRIPT_PATH = \"${escaped_path}\"|" "$EXT_SOURCE" > "$tmp"
+
+    dest="$TARGET_EXT_DIR/$EXT_NAME"
+    if [ "$USE_SUDO" -eq 1 ]; then
+        sudo cp "$tmp" "$dest"
+        sudo chmod 644 "$dest"
+    else
+        cp "$tmp" "$dest"
+        chmod 644 "$dest"
+    fi
     rm -f "$tmp"
-done
+    echo "$dest" >> "$MANIFEST_FILE"
+    echo "Installed extension → $dest"
+else
+    echo "Installing Nautilus Scripts fallback → $USER_SCRIPTS_DIR"
+    mkdir -p "$USER_SCRIPTS_DIR"
+    tmp="$(mktemp)"
+    sed "s|^SCRIPT_PATH=.*|SCRIPT_PATH=\"${SCRIPT_DEST}\"|" "$NAUTILUS_SCRIPT_SOURCE" > "$tmp"
+    dest="$USER_SCRIPTS_DIR/$NAUTILUS_SCRIPT_NAME"
+    cp "$tmp" "$dest"
+    chmod +x "$dest"
+    rm -f "$tmp"
+    NAUTILUS_SCRIPT_PATH="$dest"
+    echo "$dest" >> "$MANIFEST_FILE"
+    echo "Installed script → $dest"
+fi
 
 ########################################
-# KDE REFRESH
+# REFRESH + SAVE CONFIG
 ########################################
 
-refresh_kde
-
-########################################
-# SAVE CONFIG
-########################################
+refresh_nautilus
 
 cat > "$CONFIG_FILE" <<EOF
 SCRIPT_PATH="$SCRIPT_DEST"
-TARGET_DIR="$TARGET_DIR"
+TARGET_EXT_DIR="$TARGET_EXT_DIR"
 USE_SUDO="$USE_SUDO"
+INTEGRATION_MODE="$INTEGRATION_MODE"
+NAUTILUS_SCRIPT_PATH="$NAUTILUS_SCRIPT_PATH"
 EOF
 
 echo
-echo "✔ Installation complete"
+echo "Installation complete."
+if [ "$INTEGRATION_MODE" == "extension" ]; then
+    echo "Open Nautilus, right-click a video → Convert for Resolve."
+else
+    echo "Open Nautilus, right-click a video → Scripts → Convert for Resolve."
+fi
+echo
+echo "To uninstall later: ./uninstall.sh"
+echo "  or: ./install_uninstall-resolve.sh --uninstall"

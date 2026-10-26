@@ -1,50 +1,95 @@
-# DaVinci Resolve Video Converter for Dolphin File Manager
+# DaVinci Resolve Video Converter for Nautilus File Manager
 
-A small script that converts a video file to a DaVinci Resolve compatible format and container (AV1 with flac audio in an mkv container) with support for passthrough if video or audio is already compatible, and batch conversion.  Includes a .desktop file for context menu integration with KDE Dolphin File Manager.
+Converts video to a DaVinci Resolve–friendly MKV (AV1 + FLAC, with passthrough when already compatible). Integrates with GNOME Nautilus via a Python context-menu extension when available, or a Nautilus Scripts fallback.
 
 ## Dependencies
 
+**Required**
+
 1. `bash`
-2. `ffmpeg`
-3. `ffprobe` (Comes with ffmpeg)
-4. `zenity`
+2. `ffmpeg` (includes `ffprobe`)
+3. `zenity`
 
-## Install
+**Recommended (top-level right-click menu)**
 
-Double click `resolveconverter-installer.desktop` and run as a program (you can also run `ffmpeg-install_remote-resolve.sh` by itself or `install_uninstall-resolve.sh` in if you installed the entire repo)
+4. `python3-nautilus` (Debian/Ubuntu) / `nautilus-python` (Fedora) / `python-nautilus` (Arch)
 
-For a manual install:
-1. Put `ResolveConvert.sh` in `~/.local/bin`
-2. Put `VideoConverterResolve.desktop` `~/.local/share/kio/servicemenus/`.
-3. `chmod +x ~/.local/bin/ResolveConvert.sh`
-4. `chmod +x ~/.local/share/kio/servicemenus/VideoConverterResolve.desktop`
-5. Edit `.desktop` file if you want the script elsewhere.
-6. Feel free to change any part of this to suit your needs.
+Without the Python package, the installer installs a **Scripts** submenu entry instead.
+
+## Easy install / uninstall
+
+From a clone of this repo:
+
+```bash
+chmod +x install.sh uninstall.sh install_uninstall-resolve.sh
+./install.sh
+```
+
+To remove:
+
+```bash
+./uninstall.sh
+```
+
+Or double-click `resolveconverter-installer.desktop` and run it as a program (downloads and runs the remote installer). You can also run `ffmpeg-install_remote-resolve.sh` alone.
+
+The installer:
+
+- Installs `ffmpegconvert-resolve.sh` to `~/.local/bin` (or a path you choose)
+- Prefers a Nautilus Python extension for a top-level **Convert for Resolve** menu item
+- Falls back to `~/.local/share/nautilus/scripts/Convert for Resolve` if `python3-nautilus` is missing
+- Restarts Nautilus with `nautilus -q` so the menu reloads
+
+Re-run `./install.sh` to update; use `./uninstall.sh` to remove.
+
+### Package hints for the Python extension
+
+```bash
+# Debian / Ubuntu
+sudo apt install python3-nautilus
+
+# Fedora
+sudo dnf install nautilus-python
+
+# Arch
+sudo pacman -S python-nautilus
+```
+
+Then re-run `./install.sh` and choose the extension option.
+
+## Manual install
+
+1. Copy `release/ffmpegconvert-resolve.sh` to `~/.local/bin/ffmpegconvert-resolve.sh` and `chmod +x` it.
+2. **Extension (preferred):** edit `SCRIPT_PATH` in `release/nautilus-python/ffmpegconvert_resolve.py`, copy it to `~/.local/share/nautilus-python/extensions/`, then run `nautilus -q`.
+3. **Scripts fallback:** edit `SCRIPT_PATH` in `release/nautilus-scripts/Convert for Resolve`, copy it to `~/.local/share/nautilus/scripts/`, `chmod +x`, then run `nautilus -q`.
 
 ## Use
 
-Right-click file in Dolphin -> Convert for Resolve.
+- **With extension:** right-click video(s) or folder(s) in Nautilus → **Convert for Resolve**
+- **With Scripts fallback:** right-click → **Scripts** → **Convert for Resolve**
+- **CLI:** `~/.local/bin/ffmpegconvert-resolve.sh /path/to/file-or-dir [...]`
 
-You may also run `~/.local/bin/ResolveConvert.sh /path/to/your/file` to run the script manually without Dolphin.
+Output is written next to the source as `originalname_ext_resolve.mkv` (example: `clip.mp4` → `clip_mp4_resolve.mkv`). If that file already exists, conversion is skipped (source files are never overwritten).
 
-## Notes
+## Behavior notes
 
-For a more general purpose converter see `https://github.com/MetalMan1245/dolphin-context-convert-davinci` that is just an improvement to the original project it is forked from `https://github.com/NuVanDibe/dolphin-context-convert`
+- Video is passed through when already Resolve-friendly in Matroska (including AV1, ProRes, DNxHD/HR, CineForm, MJPEG, and similar). Otherwise it encodes to AV1 (VAAPI when available, else `libsvtav1`).
+- Audio is passed through for FLAC / PCM / ALAC; otherwise converted to FLAC. Multi-stream audio is supported.
+- Batch conversion works for multiple selections and for directories (common video extensions). Folder batching is best-effort.
 
-Video will be passed through if it is already AV1, audio will be passed through if it is already flac, and `originalfilename_originalextension_converted.mkv` will be generated in the same directory as your file.
+## Related projects
 
-Batch file conversion is possible, though untested when used on a full folder, only tested on selected files.
+General-purpose Dolphin converters: [dolphin-context-convert-davinci](https://github.com/MetalMan1245/dolphin-context-convert-davinci) (based on [dolphin-context-convert](https://github.com/NuVanDibe/dolphin-context-convert)).
 
-Multi stream audio is supported, all streams will either be converted to flac or passed through if they are already flac.
+## Versioning / GitHub Releases
 
-Your original file will never be overwritten, however subsequent conversions of the same file may cause overwrites of the previous conversion.
+The project version lives in [`VERSION`](VERSION) (semver, e.g. `1.0.0`).
 
-## Upcoming Features
+Pushing a change to `VERSION` on `main` triggers a GitHub Action that creates a tagged Release (`v1.0.0`) with:
 
-None, feel free to submit bug reports or a bug report as a feature request, but as long as it keeps working for me I'm done making changes to the script.
+- `resolve-convert-nautilus-<version>.zip` — extract and run `./install.sh`
+- `resolveconverter-installer-<version>.desktop` — optional one-click installer launcher
 
 ## Disclaimers
 
-THIS IS VIBE CODED.  I am not a real programmer and as such AI was used to create this, therefore I do not promise quality, repeatability, or robustness.
-
-That said I use this script myself to convert video from cameras as part of footage ingestion (maybe one day Blackmagic will fix the Linux build and all of this will be unnecessary) and if you think you can do better, feel free to message me on my website https://sc2.sarl or fork if you would rather create your own project.  Though I personally hate fragmentation, so I would much rather you just get in contact with me and I will add you to this repo so you can push changes yourself.
+THIS IS VIBE CODED. Quality and robustness are not guaranteed. Fork or open issues as needed.
