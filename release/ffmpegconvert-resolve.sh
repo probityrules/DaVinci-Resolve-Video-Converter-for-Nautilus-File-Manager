@@ -25,8 +25,18 @@ VAAPI_MAX_KBPS=80000
 # Used only when the container reports no per-stream video bitrate.
 VAAPI_FALLBACK_KBPS=25000
 
+########################################
+# MODE: resolve (default) | mp4
+########################################
+
+CONVERT_MODE="resolve"
+if [[ "${1:-}" == "--to-mp4" ]]; then
+  CONVERT_MODE="mp4"
+  shift
+fi
+
 if [[ $# -lt 1 ]]; then
-  zenity --error --text="Usage: $0 <file-or-directory> [more files/dirs...]"
+  zenity --error --text="Usage: $0 [--to-mp4] <file-or-directory> [more files/dirs...]"
   exit 1
 fi
 
@@ -91,20 +101,41 @@ files=()
 
 for input in "$@"; do
   if [[ -d "$input" ]]; then
-    while IFS= read -r f; do
-      files+=("$f")
-    done < <(find "$input" -type f \( \
-      -iname "*.mp4" -o \
-      -iname "*.mkv" -o \
-      -iname "*.mov" -o \
-      -iname "*.avi" -o \
-      -iname "*.mts" -o \
-      -iname "*.m2ts" \
-    \) ! -iname "*_resolve.mkv")
+    if [[ "$CONVERT_MODE" == "mp4" ]]; then
+      while IFS= read -r f; do
+        files+=("$f")
+      done < <(find "$input" -type f \( -iname "*.mov" -o -iname "*.qt" \))
+    else
+      while IFS= read -r f; do
+        files+=("$f")
+      done < <(find "$input" -type f \( \
+        -iname "*.mp4" -o \
+        -iname "*.mkv" -o \
+        -iname "*.mov" -o \
+        -iname "*.avi" -o \
+        -iname "*.mts" -o \
+        -iname "*.m2ts" \
+      \) ! -iname "*_resolve.mkv")
+    fi
   else
+    if [[ "$CONVERT_MODE" == "mp4" ]]; then
+      ext="${input##*.}"
+      ext_lc="${ext,,}"
+      if [[ "$ext_lc" != "mov" && "$ext_lc" != "qt" ]]; then
+        debug "Skipping non-MOV for --to-mp4: $input"
+        continue
+      fi
+    fi
     files+=("$input")
   fi
 done
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  zenity --error --text="No matching files to convert."
+  exit 1
+fi
+
+debug "CONVERT_MODE=$CONVERT_MODE files=${#files[@]}"
 
 ########################################
 # PROCESS FILE (BUILD FFMPEG ARGS)
@@ -256,6 +287,116 @@ process_file_build_only() {
   done
 }
 
+# MOV / QuickTime → MP4. Copy streams when MP4-safe; otherwise H.264 + AAC.
+MP4_PASSTHROUGH_VIDEO="h264 hevc mpeg4 av1 vp9"
+MP4_PASSTHROUGH_AUDIO="aac mp3 ac3 eac3 alac"
+
+mp4_video_passthrough_ok() {
+  local codec="$1" c
+  [[ -z "$codec" ]] && return 1
+  for c in $MP4_PASSTHROUGH_VIDEO; do
+    [[ "$codec" == "$c" ]] && return 0
+  done
+  return 1
+}
+
+mp4_audio_passthrough_ok() {
+  local codec="$1" c
+  [[ -z "$codec" ]] && return 1
+  for c in $MP4_PASSTHROUGH_AUDIO; do
+    [[ "$codec" == "$c" ]] && return 0
+  done
+  return 1
+}
+
+process_file_build_mp4() {
+  local input="$1"
+
+  local -A st_type=() st_name=()
+  local -a idx_list=()
+  local line key val idx
+
+  while IFS= read -r line; do
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    val="${val%\"}"; val="${val#\"}"
+    case "$key" in
+      streams.stream.*.codec_type)
+        idx="${key#streams.stream.}"
+        idx="${idx%.codec_type}"
+        st_type[$idx]="$val"
+        idx_list+=("$idx")
+        ;;
+      streams.stream.*.codec_name)
+        idx="${key#streams.stream.}"
+        idx="${idx%.codec_name}"
+        st_name[$idx]="$val"
+        ;;
+    esac
+  done < <(ffprobe -v error -of flat -show_entries stream=index,codec_type,codec_name "$input")
+
+  local video_indices=() video_codecs=()
+  local audio_indices=() audio_codecs=()
+
+  while IFS= read -r idx; do
+    [[ -z "$idx" ]] && continue
+    case "${st_type[$idx]}" in
+      video)
+        [[ -z "${st_name[$idx]}" ]] && continue
+        video_indices+=("$idx")
+        video_codecs+=("${st_name[$idx]}")
+        ;;
+      audio)
+        audio_indices+=("$idx")
+        audio_codecs+=("${st_name[$idx]}")
+        ;;
+    esac
+  done < <(printf '%s\n' "${idx_list[@]}" | sort -n)
+
+  debug "mp4 video: ${video_codecs[*]:-none}"
+  debug "mp4 audio: ${audio_codecs[*]:-none}"
+
+  ffmpeg_args=(-i "$input")
+
+  local o=0 vi codec
+  for vi in "${!video_codecs[@]}"; do
+    idx="${video_indices[$vi]}"
+    codec="${video_codecs[$vi]}"
+    ffmpeg_args+=(-map "0:$idx")
+    if mp4_video_passthrough_ok "$codec"; then
+      debug "MP4 v:$o ($codec) - copy"
+      ffmpeg_args+=(-c:v:$o copy)
+    else
+      debug "MP4 v:$o ($codec) - libx264"
+      ffmpeg_args+=(-c:v:$o libx264 -preset medium -crf 18)
+    fi
+    ((o++))
+  done
+
+  o=0
+  local ai
+  for ai in "${!audio_indices[@]}"; do
+    idx="${audio_indices[$ai]}"
+    codec="${audio_codecs[$ai]}"
+    if ! codec_has_decoder "$codec"; then
+      debug "Skipping audio 0:$idx ($codec) - no decoder"
+      continue
+    fi
+    ffmpeg_args+=(-map "0:$idx")
+    if mp4_audio_passthrough_ok "$codec"; then
+      debug "MP4 a:$o ($codec) - copy"
+      ffmpeg_args+=(-c:a:$o copy)
+    else
+      debug "MP4 a:$o ($codec) - aac"
+      ffmpeg_args+=(-c:a:$o aac -b:a 192k)
+    fi
+    ((o++))
+  done
+
+  ffmpeg_args+=(-movflags +faststart)
+}
+
 ########################################
 # ZENITY SETUP (BATCH MODE)
 ########################################
@@ -267,8 +408,11 @@ any_failed=0
 FIFO=$(mktemp -u)
 mkfifo "$FIFO"
 
+PROGRESS_TITLE="Video Conversion"
+[[ "$CONVERT_MODE" == "mp4" ]] && PROGRESS_TITLE="MOV to MP4"
+
 zenity --progress \
-  --title="Video Conversion" \
+  --title="$PROGRESS_TITLE" \
   --percentage=0 \
   --auto-close < "$FIFO" &
 
@@ -288,7 +432,11 @@ for file in "${files[@]}"; do
   filename=$(basename "$file")
   echo "# Converting ($current/$total_files)\n$filename" >&3
 
-  output="${file%.*}_${file##*.}_resolve.mkv"
+  if [[ "$CONVERT_MODE" == "mp4" ]]; then
+    output="${file%.*}.mp4"
+  else
+    output="${file%.*}_${file##*.}_resolve.mkv"
+  fi
 
   if [[ -e "$output" ]]; then
     debug "Skipping (exists): $output"
@@ -297,7 +445,11 @@ for file in "${files[@]}"; do
     continue
   fi
 
-  process_file_build_only "$file"
+  if [[ "$CONVERT_MODE" == "mp4" ]]; then
+    process_file_build_mp4 "$file"
+  else
+    process_file_build_only "$file"
+  fi
 
   debug "FFMPEG CMD: ffmpeg -y ${ffmpeg_args[*]} \"$output\""
 

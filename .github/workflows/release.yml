@@ -53,10 +53,9 @@ jobs:
             resolveconverter-installer.desktop \
             "$STAGE/"
 
-          mkdir -p "$STAGE/release/nautilus-python" "$STAGE/release/nautilus-scripts"
+          mkdir -p "$STAGE/release/nautilus-python"
           cp release/ffmpegconvert-resolve.sh "$STAGE/release/"
           cp release/nautilus-python/ffmpegconvert_resolve.py "$STAGE/release/nautilus-python/"
-          cp "release/nautilus-scripts/Convert for Resolve" "$STAGE/release/nautilus-scripts/"
 
           if [[ -f DV_Panels.png ]]; then
             cp DV_Panels.png "$STAGE/"
@@ -67,8 +66,7 @@ jobs:
             "$STAGE/uninstall.sh" \
             "$STAGE/install_uninstall-resolve.sh" \
             "$STAGE/ffmpeg-install_remote-resolve.sh" \
-            "$STAGE/release/ffmpegconvert-resolve.sh" \
-            "$STAGE/release/nautilus-scripts/Convert for Resolve"
+            "$STAGE/release/ffmpegconvert-resolve.sh"
 
           zip -r "${STAGE}.zip" "$STAGE"
           cp resolveconverter-installer.desktop \
@@ -108,10 +106,9 @@ jobs:
 
           ### Dependencies
 
-          - Required: \`bash\`, \`ffmpeg\` (with \`ffprobe\`), \`zenity\`
-          - Recommended for a top-level context menu: \`python3-nautilus\` / \`nautilus-python\` / \`python-nautilus\`
+          - Required: \`bash\`, \`ffmpeg\` (with \`ffprobe\`), \`zenity\`, \`python3-nautilus\` / \`nautilus-python\` / \`python-nautilus\`
 
-          After install, reopen Nautilus if needed, then right-click a video → **Convert for Resolve** (or **Scripts → Convert for Resolve**).
+          After install, reopen Nautilus if needed, then right-click a video → **Convert for Resolve**, or a \`.mov\` → **Convert MOV to MP4**.
           EOF
 
       - name: Create GitHub Release
